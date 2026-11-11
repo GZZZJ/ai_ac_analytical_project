@@ -27,10 +27,10 @@ SEED = 20260922
 random.seed(SEED)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT_DIR = os.path.join(BASE_DIR, "03_模拟数据")
+OUT_DIR = os.environ.get("SIM_DATA_OUT_DIR", os.path.join(BASE_DIR, "03_模拟数据"))
 
 START = date(2026, 7, 29)
-END = date(2026, 9, 22)
+END = date.fromisoformat(os.environ.get("SIM_DATA_END", "2026-09-22"))
 
 
 def daterange(a, b):
@@ -64,6 +64,7 @@ DY_CREATIVES = [
     ("DY_CRE_10", "2026-08-28", 0.20, "视频-口播"),
     ("DY_CRE_11", "2026-09-03", 0.22, "视频-剧情"),
     ("DY_CRE_12", "2026-09-19", 0.20, "视频-口播"),
+    ("DY_CRE_13", "2026-09-24", 0.28, "视频-剧情"),
 ]
 DY_CRE_LIFE = 30           # 素材有效投放天数
 DY_CRE_MATURITY_DECAY = 0.055   # 素材相对成熟度衰减系数（指数）
@@ -182,23 +183,34 @@ TX_BASE = dict(cost=380000.0, fl=730.0, cpm=20.04, ctr=0.00770, r_click_login=0.
 TX_LOGIN_COST_UP = 0.045   # 09-16 起首登成本抬升幅度
 
 
+def recent_stage(d):
+    """09-23 起构造四日渐进变化；此前 Benchmark 的所有值保持不变。"""
+    return {23: 0.25, 24: 0.55, 25: 0.80, 26: 1.0}.get(d.day, 0.0) if d.year == 2026 and d.month == 9 else 0.0
+
+
 def tx_state(day_idx):
     t = ramp(day_idx, SHOWCASE_A_SHIFT, "2026-09-18")
     cost_sh = {k: TX_SHARE_COST_P1[k] + (TX_SHARE_COST_P2[k] - TX_SHARE_COST_P1[k]) * t
                for k in TX_BIDTYPES}
     fl_sh = {k: TX_SHARE_FL_P1[k] + (TX_SHARE_FL_P2[k] - TX_SHARE_FL_P1[k]) * t
              for k in TX_BIDTYPES}
+    stage = recent_stage(DATES[day_idx])
+    cost_sh["腾讯RTA策略_A"] += 0.08 * stage
+    cost_sh["腾讯RTA策略_D"] -= 0.08 * stage
+    fl_sh["腾讯RTA策略_A"] += 0.025 * stage
+    fl_sh["腾讯RTA策略_D"] -= 0.025 * stage
     return cost_sh, fl_sh, t
 
 
 def build_tx(day_idx, d):
     ds = d.isoformat()
     cost_sh, fl_sh, t = tx_state(day_idx)
+    stage = recent_stage(d)
 
-    total_cost = TX_BASE["cost"] * weekend_factor(d) * noise(f"tx_cost_{ds}", 0.025)
+    total_cost = TX_BASE["cost"] * (1 + 0.20 * stage) * weekend_factor(d) * noise(f"tx_cost_{ds}", 0.025)
 
     # 首登成本抬升 -> 同样花费换来的首登减少
-    login_up = 1.0 + TX_LOGIN_COST_UP * ramp(day_idx, "2026-09-16", "2026-09-18")
+    login_up = (1.0 + TX_LOGIN_COST_UP * ramp(day_idx, "2026-09-16", "2026-09-18")) * (1 + 0.13 * stage)
     total_fl = (total_cost / (TX_BASE["cost"] / TX_BASE["fl"]) / login_up
                 * noise(f"tx_fln_{ds}", 0.020))
 
@@ -210,6 +222,7 @@ def build_tx(day_idx, d):
         if t > 0:
             for k, m in TX_POST_MUL.items():
                 p[k] = p[k] * (1 + (m - 1) * t)
+        p["use"] *= 1 - 0.07 * stage
 
         fl = total_fl * fl_sh[name]
         apply_ = fl * p["apply"]
@@ -281,6 +294,8 @@ def dy_channel_ctr(day_idx, d):
     # 周末流量结构差异
     if is_weekend(d):
         base *= 0.975
+    # 新素材上线后，构造一个逐日恢复段；渠道 CTR 与素材 CTR 同源。
+    base *= 1 + {24: 0.04, 25: 0.11, 26: 0.17}.get(d.day, 0.0) if d.year == 2026 and d.month == 9 else 1
     return base
 
 
@@ -717,6 +732,8 @@ change_log = [
     ("2026-09-20", "16:00", "回传链路异常", "抖音-ROI账户", "回传比例 90%", "回传比例 34%", "数据/研发", "短时故障，19:00 后自行恢复"),
     ("2026-09-20", "19:10", "回传链路恢复", "抖音-ROI账户", "回传比例 34%", "回传比例 86%", "数据/研发", "故障恢复，部分数据待补发"),
     ("2026-09-22", "09:00", "定向调整", "抖音-ROI账户-合作方A", "定向人群包 4 个", "定向人群包 3 个", "获客策略", "收缩低效人群包"),
+    ("2026-09-23", "09:20", "策略调整", "腾讯RTA策略_A", "原出价与预算", "出价与预算上调", "获客运营", "扩大 A 策略投放测试；效果需用对照验证"),
+    ("2026-09-24", "10:00", "素材上线", "抖音-DY_CRE_13", "—", "新剧情素材上线", "素材", "补充素材供给；流量变化不能仅凭时间吻合归因"),
 ]
 
 # 事件表（业务事件，用于异常与事件的时间关系分析）
